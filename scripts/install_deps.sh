@@ -19,7 +19,7 @@
 #
 # SageMaker dependencies are maintained separately in:
 #
-#   sagemaker/requirements.txt
+#   aws-sagemaker/requirements.txt
 #
 # ============================================================
 

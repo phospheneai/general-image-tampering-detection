@@ -19,13 +19,13 @@ One command does everything, in order:
                      drive. Nothing is streamed by the training code.
   5. Resume          if <checkpoints>/<name>/latest_checkpoint.pth exists,
                      continue from it — same logic as the SageMaker job
-                     (sagemaker/train.py), down to the mid-epoch loader
+                     (aws-sagemaker/train.py), down to the mid-epoch loader
                      position.
   6. Train           load_pipeline_from_yml + trainer.train_model, exactly
                      what the SageMaker entry point runs.
 
 Interrupt it (Ctrl+C, crash, reboot) and run the same command again to
-continue. The SageMaker pipeline is separate: see sagemaker/README.md.
+continue. The SageMaker pipeline is separate: see aws-sagemaker/README.md.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ DEFAULT_CONFIG = REPO / "configs" / "local" / "train_forensics.yml"
 SMOKE_CONFIG = REPO / "configs" / "local" / "smoke.yml"
 
 # Where the SageMaker job gets the backbone — the single source of truth.
-SAGEMAKER_CONFIG = REPO / "sagemaker" / "config" / "train_forensics.yml"
+SAGEMAKER_CONFIG = REPO / "aws-sagemaker" / "config" / "train_forensics.yml"
 
 
 def log(msg: str) -> None:
@@ -253,10 +253,10 @@ def build_config(cfg_path: Path) -> tuple[dict, Path]:
 
 
 def _sagemaker_entry():
-    """sagemaker/train.py as a module (not importable by name: the directory
-    would shadow the `sagemaker` SDK package), for its resume logic."""
+    """aws-sagemaker/train.py as a module (the directory name has a dash, so
+    it is not importable by name), for its resume logic."""
     spec = importlib.util.spec_from_file_location(
-        "_sagemaker_entry", REPO / "sagemaker" / "train.py"
+        "_sagemaker_entry", REPO / "aws-sagemaker" / "train.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -1,5 +1,5 @@
 # Forgery-segmentation training image. Build context is the REPO ROOT:
-#   docker build -f sagemaker/Dockerfile -t forgery-train:dev .
+#   docker build -f aws-sagemaker/Dockerfile -t forgery-train:dev .
 #
 # Base is the AWS Deep Learning Container launch.py pins (framework 2.3 /
 # py311), so requirements.txt stays valid as-is: the DLC supplies torch/
@@ -27,21 +27,21 @@ WORKDIR /opt/ml/code
 
 # deps first — this layer is cached until requirements.txt changes, so a code
 # push reuses the (large) pip layer instead of reinstalling everything.
-COPY sagemaker/requirements.txt /opt/ml/code/sagemaker/requirements.txt
+COPY aws-sagemaker/requirements.txt /opt/ml/code/sagemaker/requirements.txt
 RUN pip install --no-cache-dir -r /opt/ml/code/sagemaker/requirements.txt
 
 # Only what training needs, laid out as in the repo so relative paths resolve
 # identically:
 #   authgenforge/  the trainer package (importable via PYTHONPATH=/opt/ml/code)
-#   sagemaker/     train.py + config/ + backbone/
+#   sagemaker/     aws-sagemaker/ from the repo: train.py + config/ + backbone/
 # The DINOv3 weights are deliberately absent — they arrive on the `artifacts`
 # S3 channel at /opt/ml/input/data/artifacts/.
 COPY authgenforge/ /opt/ml/code/authgenforge/
-COPY sagemaker/    /opt/ml/code/sagemaker/
+COPY aws-sagemaker/ /opt/ml/code/sagemaker/
 
-# The state machines set ContainerEntrypoint/ContainerArguments explicitly;
-# this default only matters for a bare `docker run`. train.py uses
-# parse_known_args, so the legacy `train` argument SageMaker can append is
-# dropped harmlessly.
+# launch.py --image-uri sets the entrypoint and passes --config/--end-epoch
+# as container arguments, so one image runs any config; this default only
+# matters for a bare `docker run`. train.py uses parse_known_args, so the
+# legacy `train` argument SageMaker can append is dropped harmlessly.
 ENTRYPOINT ["python", "/opt/ml/code/sagemaker/train.py"]
 CMD ["--config", "config/train_forensics.yml"]

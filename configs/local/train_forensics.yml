@@ -1,6 +1,6 @@
 # ============================================================
 # Local GPU run (python train.py) — same model + hyperparameters as
-# sagemaker/config/train_forensics.yml; only the I/O differs:
+# aws-sagemaker/config/train_forensics.yml; only the I/O differs:
 # processed-v1 is read from a mounted S3 prefix (the 1.1 TB train split
 # does not fit on the box) and checkpoints stay local.
 # Relative paths resolve against this file.

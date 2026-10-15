@@ -13,7 +13,7 @@ schema comes from packages/mdsconverter/build_mds_dataset.py's COLUMNS):
                   tests/sagemaker/emulate_training_job.py and CI.
 
 --upload syncs <out>/ to s3://.../image-tampering-detection/smoke/, which is
-where infra/smoke-pipeline.asl.json mounts it from.
+where the Smoke test (aws-sagemaker/config/smoke.yml) mounts it from.
 
     python scripts/make_smoke_mds.py --out smoke_mds --upload
     python scripts/make_smoke_mds.py --synthetic --out /tmp/smoke_mds --train 8 --test 4

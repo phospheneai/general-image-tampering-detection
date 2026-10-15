@@ -1,10 +1,10 @@
-# CPU stand-in for the AWS PyTorch DLC that sagemaker/Dockerfile builds FROM.
+# CPU stand-in for the AWS PyTorch DLC that aws-sagemaker/Dockerfile builds FROM.
 # Provides exactly what the DLC provides and requirements.txt deliberately does
 # not pin (torch/torchvision + scikit-learn/seaborn/matplotlib/tqdm/pyyaml), at
 # the DLC's versions, so CI can build the real Dockerfile on top of it:
 #
 #   docker build -f tests/sagemaker/cpu-base.Dockerfile -t forgery-cpu-base tests/sagemaker
-#   docker build -f sagemaker/Dockerfile --build-arg BASE_IMAGE=forgery-cpu-base -t forgery-train:ci .
+#   docker build -f aws-sagemaker/Dockerfile --build-arg BASE_IMAGE=forgery-cpu-base -t forgery-train:ci .
 FROM python:3.11-slim
 
 # libglib2.0 for opencv-python-headless; libgomp for torch's CPU kernels

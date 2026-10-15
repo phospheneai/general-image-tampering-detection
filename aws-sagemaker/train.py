@@ -5,7 +5,7 @@ forgery segmentation model.
 
 The SageMaker estimator uses:
 
-    source_dir = sagemaker/
+    source_dir = aws-sagemaker/
 
 Therefore this file runs from /opt/ml/code/ inside the SageMaker
 training container.
@@ -59,7 +59,7 @@ import yaml
 # Locally:
 #     <repo>/sagemaker/
 #
-# source_dir=sagemaker/ means the SageMaker container receives
+# source_dir=aws-sagemaker/ means the SageMaker container receives
 # the contents of this directory under /opt/ml/code/.
 
 CODE_DIR = Path(__file__).resolve().parent
@@ -374,7 +374,7 @@ def main() -> None:
     )
 
     # Which code produced this run's checkpoints: GIT_SHA is baked into the
-    # image at build time, TRAINING_IMAGE is set by the state machine.
+    # image at build time, TRAINING_IMAGE is set by launch.py --image-uri.
     print(
         f"[train] git_sha={os.environ.get('GIT_SHA', 'unknown')} "
         f"image={os.environ.get('TRAINING_IMAGE', 'unknown')}",

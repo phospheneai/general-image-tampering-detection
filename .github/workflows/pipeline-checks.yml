@@ -1,6 +1,6 @@
 # Checks for the SageMaker pipeline that need no AWS access, so they can run
 # on every change that touches it:
-#   static     — infra templates, ASL <-> config <-> IAM agreement, train.py patching
+#   static     — IAM templates, launcher <-> config <-> IAM <-> workflow agreement, train.py patching
 #   container  — build the real image on a CPU base and run it SageMaker-style
 #                (read-only channel mounts, smoke.yml, restart-and-resume)
 name: Pipeline checks
@@ -9,8 +9,8 @@ on:
   pull_request:
     paths:
       - "authgenforge/**"
-      - "sagemaker/**"
-      - "infra/**"
+      - "aws-sagemaker/**"
+      - "aws-infra/**"
       - "tests/sagemaker/**"
       - "scripts/make_smoke_mds.py"
       - "packages/mdsconverter/build_mds_dataset.py"
@@ -19,8 +19,8 @@ on:
   push:
     paths:
       - "authgenforge/**"
-      - "sagemaker/**"
-      - "infra/**"
+      - "aws-sagemaker/**"
+      - "aws-infra/**"
       - "tests/sagemaker/**"
       - "scripts/make_smoke_mds.py"
       - "packages/mdsconverter/build_mds_dataset.py"
@@ -49,11 +49,11 @@ jobs:
       - name: Install training deps (CPU)
         run: |
           pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorch.org/whl/cpu
-          pip install -r sagemaker/requirements.txt pyyaml pytest scikit-learn matplotlib seaborn tqdm
+          pip install -r aws-sagemaker/requirements.txt pyyaml pytest scikit-learn matplotlib seaborn tqdm
       - name: Pipeline and resume tests
         run: pytest tests/sagemaker -q -rs
       - name: Shell scripts parse
-        run: for f in infra/*.sh tests/sagemaker/*.sh; do bash -n "$f"; done
+        run: for f in aws-infra/*.sh tests/sagemaker/*.sh; do bash -n "$f"; done
       - name: Lint workflows
         run: |
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
