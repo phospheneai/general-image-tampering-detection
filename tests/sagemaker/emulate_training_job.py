@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 """
-Run sagemaker/train.py the way a SageMaker training job does, without AWS,
+Run aws-sagemaker/train.py the way a SageMaker training job does, without AWS,
 and check the result against what the pipeline relies on.
 
 A SageMaker job is: input channels mounted at /opt/ml/input/data/<channel>/,
 /opt/ml/checkpoints synced to S3, a traceback in /opt/ml/output/failure on
-error, and metrics scraped from the log with the regexes in the ASL. This
+error, and metrics scraped from the log with launch.py's regexes. This
 script recreates that layout under --root and verifies each part.
 
     prepare  synthetic MDS train/test (or --data, e.g. the real smoke slice) + a
@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import re
 import shutil
@@ -34,9 +33,23 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SMOKE_CONFIG = REPO_ROOT / "sagemaker" / "config" / "smoke.yml"
-SMOKE_ASL = REPO_ROOT / "infra" / "smoke-pipeline.asl.json"
-BACKBONE_CONFIG = REPO_ROOT / "sagemaker" / "backbone" / "dinov3-vitl16" / "config.json"
+SMOKE_CONFIG = REPO_ROOT / "aws-sagemaker" / "config" / "smoke.yml"
+LAUNCHER = REPO_ROOT / "aws-sagemaker" / "launch.py"
+BACKBONE_CONFIG = REPO_ROOT / "aws-sagemaker" / "backbone" / "dinov3-vitl16" / "config.json"
+
+
+def metric_definitions() -> list[dict]:
+    """launch.py's METRIC_DEFS, read with ast so `check` stays stdlib-only
+    (it also runs on the CI host after a container run)."""
+    import ast
+
+    tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", None) == "METRIC_DEFS" for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise RuntimeError(f"no METRIC_DEFS in {LAUNCHER}")
 
 
 # ------------------------------------------------------------------
@@ -104,7 +117,7 @@ def _local_config(root: Path, crop_size: int | None) -> Path:
 
 
 def _run_train(config: Path, end_epoch: int, log: Path) -> int:
-    cmd = [sys.executable, str(REPO_ROOT / "sagemaker" / "train.py"),
+    cmd = [sys.executable, str(REPO_ROOT / "aws-sagemaker" / "train.py"),
            "--config", str(config), "--end-epoch", str(end_epoch),
            "train"]  # the legacy positional SageMaker can append — must be ignored
     env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
@@ -159,11 +172,9 @@ def check(root: Path, log: Path, returncode: int, expect_resume: bool, end_epoch
     if (root / "output" / "failure").exists():
         problems.append("/opt/ml/output/failure was written")
 
-    # every metric the state machine scrapes must actually appear in the log,
-    # otherwise the SageMaker Metrics tab silently stays empty
-    asl = json.loads(SMOKE_ASL.read_text(encoding="utf-8"))
-    metric_defs = asl["States"]["SmokeTrain"]["Parameters"]["AlgorithmSpecification"]["MetricDefinitions"]
-    for m in metric_defs:
+    # every metric launch.py tells SageMaker to scrape must actually appear in
+    # the log, otherwise the SageMaker Metrics tab silently stays empty
+    for m in metric_definitions():
         values = re.findall(m["Regex"], text)
         if not values:
             problems.append(f"metric {m['Name']} never matched /{m['Regex']}/")

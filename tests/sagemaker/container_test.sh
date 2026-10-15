@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build the real training image (on a CPU base) and run it the way SageMaker
 # runs a training job: channels mounted read-only at /opt/ml/input/data/<name>,
-# /opt/ml/checkpoints and /opt/ml/output writable, the state machine's exact
-# entrypoint + arguments, and the config baked into the image (smoke.yml,
+# /opt/ml/checkpoints and /opt/ml/output writable, the exact entrypoint +
+# arguments launch.py --image-uri gives the job, and the config baked into the image (smoke.yml,
 # unchanged). Then a second run on the same checkpoint dir, as after a spot
 # interruption. No AWS needed — this is what the "Container test" workflow runs.
 #
@@ -17,7 +17,7 @@ IMAGE=forgery-train:container-test
 echo "[container-test] work dir: $WORK"
 
 docker build -q -f tests/sagemaker/cpu-base.Dockerfile -t forgery-cpu-base tests/sagemaker
-docker build -f sagemaker/Dockerfile --build-arg BASE_IMAGE=forgery-cpu-base \
+docker build -f aws-sagemaker/Dockerfile --build-arg BASE_IMAGE=forgery-cpu-base \
   --build-arg GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo local)" -t "$IMAGE" .
 
 # created here, not by the (root) container, so the host can write the logs

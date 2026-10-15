@@ -1,14 +1,15 @@
 """
 Static checks for the SageMaker pipeline: the pieces live in different files
-(ASL, IAM, configs, workflows, setup script) and only work if they agree.
-Each test pins one of those agreements. Needs only pyyaml + pytest; the
-metric-format test also runs when torch/peft are installed.
+(launcher, configs, IAM, workflows, Dockerfile, setup script) and only work if
+they agree. Each test pins one of those agreements. Needs only pyyaml +
+pytest; the metric-format test also runs when torch/peft are installed.
 
     pytest tests/sagemaker -q
 """
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import re
@@ -18,30 +19,21 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-INFRA = ROOT / "infra"
-SM = ROOT / "sagemaker"
+INFRA = ROOT / "aws-infra"
+SM = ROOT / "aws-sagemaker"
 WORKFLOWS = ROOT / ".github" / "workflows"
 
 ACCOUNT, REGION = "123456789012", "us-east-1"
+SAGEMAKER_ROLE = "forgery-sagemaker-role"
+ECR_REPOSITORY = "forgery-train"
 
-# (state machine name, ASL file, task state, config the ASL runs)
-PIPELINES = [
-    ("forgery-training", "train-pipeline.asl.json", "Train", "config/train_forensics.yml"),
-    ("forgery-smoke", "smoke-pipeline.asl.json", "SmokeTrain", "config/smoke.yml"),
-]
+# the configs the workflows run: smoke (Smoke test) + every Run training choice
+SMOKE_CONFIG = "config/smoke.yml"
 
 
 def render(path: Path) -> str:
-    # the Python twin of infra/render.sh
+    # the Python twin of aws-infra/render.sh
     return path.read_text(encoding="utf-8").replace("${AWS_ACCOUNT_ID}", ACCOUNT).replace("${AWS_REGION}", REGION)
-
-
-def asl(name: str) -> dict:
-    return json.loads(render(INFRA / name))
-
-
-def task_params(name: str, state: str) -> dict:
-    return asl(name)["States"][state]["Parameters"]
 
 
 def config(rel: str) -> dict:
@@ -52,41 +44,91 @@ def workflow(name: str) -> dict:
     return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
 
 
-# ------------------------------------------------------------------
-# Templates
-# ------------------------------------------------------------------
-
-@pytest.mark.parametrize("path", sorted(INFRA.glob("**/*.json")), ids=lambda p: p.name)
-def test_templates_render_to_valid_json(path):
-    text = render(path)
-    assert "${" not in text, f"undefined placeholder in {path.name}"
-    json.loads(text)
+def workflow_text(name: str) -> str:
+    return (WORKFLOWS / name).read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("_, name, state, __", PIPELINES)
-def test_asl_shape(_, name, state, __):
-    m = asl(name)
-    assert m["StartAt"] == state
-    task = m["States"][state]
-    assert task["Resource"] == "arn:aws:states:::sagemaker:createTrainingJob.sync"
-    for catch in task["Catch"]:
-        assert m["States"][catch["Next"]]["Type"] == "Fail"
-    assert task_params(name, state)["RoleArn"] == f"arn:aws:iam::{ACCOUNT}:role/forgery-sagemaker-role"
+def run_training_configs() -> list[str]:
+    return workflow("run-training.yml")[True]["workflow_dispatch"]["inputs"]["config"]["options"]
+
+
+def all_configs() -> list[str]:
+    return [SMOKE_CONFIG] + run_training_configs()
+
+
+def metric_definitions() -> list[dict]:
+    tree = ast.parse((SM / "launch.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "METRIC_DEFS" for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("launch.py has no METRIC_DEFS literal")
 
 
 # ------------------------------------------------------------------
-# Image <-> ASL <-> config
+# The three workflows
 # ------------------------------------------------------------------
 
-@pytest.mark.parametrize("_, name, state, cfg", PIPELINES)
-def test_entrypoint_and_config_exist_in_the_image(_, name, state, cfg):
-    algo = task_params(name, state)["AlgorithmSpecification"]
-    script = algo["ContainerEntrypoint"][-1]
-    assert script.startswith("/opt/ml/code/")
-    assert (ROOT / script.removeprefix("/opt/ml/code/")).is_file()   # Dockerfile copies sagemaker/ to /opt/ml/code/sagemaker/
-    assert (SM / cfg).is_file()
-    if "ContainerArguments" in algo:
-        assert algo["ContainerArguments"][:2] == ["--config", cfg]
+def test_exactly_the_three_aws_workflows_exist():
+    names = {workflow(f.name)["name"] for f in WORKFLOWS.glob("*.yml")}
+    assert {"Build training image", "Smoke test", "Run training"} <= names
+    assert "Deploy pipelines" not in names
+    for f in WORKFLOWS.glob("*.yml"):
+        assert "stepfunctions" not in f.read_text(encoding="utf-8"), f.name
+
+
+def test_build_image_uses_the_moved_dockerfile_and_builds_on_push():
+    on = workflow("build-image.yml")[True]
+    assert "workflow_dispatch" in on
+    assert set(on["push"]["paths"]) == {"authgenforge/**", "aws-sagemaker/**"}
+    assert "file: aws-sagemaker/Dockerfile" in workflow_text("build-image.yml")
+
+
+@pytest.mark.parametrize("wf", ["smoke-test.yml", "run-training.yml"])
+def test_smoke_and_run_launch_the_image_directly(wf):
+    text = workflow_text(wf)
+    assert "python aws-sagemaker/launch.py" in text
+    assert '--image-uri "$IMAGE"' in text
+    # blank image tag -> most recently pushed image
+    assert workflow(wf)[True]["workflow_dispatch"]["inputs"]["image_tag"]["required"] is False
+    assert "sort_by(imageDetails,&imagePushedAt)" in text
+    assert f"role/{SAGEMAKER_ROLE}" in text
+
+
+def _commands(wf: str) -> str:
+    """The workflow text without comment lines."""
+    return "\n".join(l for l in workflow_text(wf).splitlines() if not l.lstrip().startswith("#"))
+
+
+def test_smoke_waits_and_runs_the_smoke_config():
+    text = _commands("smoke-test.yml")
+    assert f"--config {SMOKE_CONFIG}" in text
+    assert "--no-wait" not in text          # the SDK must block and fail the workflow
+    assert "--no-spot" in text
+
+
+def test_run_training_returns_at_once_and_offers_spot():
+    text = _commands("run-training.yml")
+    inputs = workflow("run-training.yml")[True]["workflow_dispatch"]["inputs"]
+    assert "--no-wait" in text
+    assert inputs["no_spot"]["type"] == "boolean" and inputs["no_spot"]["default"] is False
+
+
+def test_run_training_offers_only_configs_in_the_image():
+    for opt in run_training_configs():
+        assert (SM / opt).is_file(), opt
+
+
+# ------------------------------------------------------------------
+# Image <-> launcher <-> config
+# ------------------------------------------------------------------
+
+def test_image_layout_matches_the_launch_entrypoint():
+    dockerfile = (SM / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY aws-sagemaker/ /opt/ml/code/sagemaker/" in dockerfile
+    assert "COPY authgenforge/ /opt/ml/code/authgenforge/" in dockerfile
+    launch = (SM / "launch.py").read_text(encoding="utf-8")
+    assert '"/opt/ml/code/sagemaker/train.py"' in launch
+    assert (SM / "train.py").is_file()
 
 
 def _channel_paths(cfg: dict) -> set[str]:
@@ -98,101 +140,95 @@ def _channel_paths(cfg: dict) -> set[str]:
     return set(paths)
 
 
-@pytest.mark.parametrize("_, name, state, cfg", PIPELINES)
-def test_every_config_path_is_a_mounted_channel(_, name, state, cfg):
-    """Channel `x` appears at /opt/ml/input/data/x — rename one, rename the other."""
-    channels = {c["ChannelName"] for c in task_params(name, state)["InputDataConfig"]}
+@pytest.mark.parametrize("cfg", all_configs())
+def test_every_config_path_is_a_mounted_channel(cfg):
+    """launch.py mounts each sagemaker.inputs entry `x` at /opt/ml/input/data/x."""
+    c = config(cfg)
+    channels = set(c["sagemaker"]["inputs"])
     wanted = set()
-    for path in _channel_paths(config(cfg)):
+    for path in _channel_paths(c):
         m = re.fullmatch(r"/opt/ml/input/data/([^/]+)/?", path)
         assert m, f"{cfg}: {path} is not a channel mount"
         wanted.add(m.group(1))
     assert wanted == channels
 
 
-@pytest.mark.parametrize("_, name, state, cfg", PIPELINES)
-def test_checkpoints_go_where_sagemaker_syncs(_, name, state, cfg):
-    local = task_params(name, state)["CheckpointConfig"]["LocalPath"]
-    assert config(cfg)["train_settings"]["save_checkpoint_folder_path"] == local
+@pytest.mark.parametrize("cfg", all_configs())
+def test_checkpoints_go_where_sagemaker_syncs(cfg):
+    launch = (SM / "launch.py").read_text(encoding="utf-8")
+    assert '"checkpoint_local_path": "/opt/ml/checkpoints"' in launch
+    assert config(cfg)["train_settings"]["save_checkpoint_folder_path"] == "/opt/ml/checkpoints"
 
 
-@pytest.mark.parametrize("_, name, state, cfg", PIPELINES)
-def test_launcher_inputs_match_the_pipeline(_, name, state, cfg):
-    """launch.py reads S3 locations from the yml, the pipeline from the ASL."""
-    launch = {k: (v["uri"], v["mode"]) for k, v in config(cfg)["sagemaker"]["inputs"].items()}
-    pipeline = {c["ChannelName"]: (c["DataSource"]["S3DataSource"]["S3Uri"], c["InputMode"])
-                for c in task_params(name, state)["InputDataConfig"]}
-    assert launch == pipeline
-
-
-@pytest.mark.parametrize("_, name, state, cfg", PIPELINES)
-def test_launcher_outputs_match_the_pipeline(_, name, state, cfg):
+@pytest.mark.parametrize("cfg", all_configs())
+def test_configs_read_our_bucket_in_our_region(cfg):
     sm = config(cfg)["sagemaker"]
-    params = json.dumps(task_params(name, state))
-    for key in ("checkpoint_prefix", "output_prefix"):
-        assert f"s3://{sm['output_bucket']}/{sm[key]}/{{}}/" in params
-
-
-def test_run_training_offers_only_configs_in_the_image():
-    options = workflow("run-training.yml")[True]["workflow_dispatch"]["inputs"]["config"]["options"]
-    for opt in options:
-        assert (SM / opt).is_file(), opt
+    assert sm["region"] == REGION
+    for spec in sm["inputs"].values():
+        assert spec["uri"].startswith("s3://authenta-data-rnd/image-tampering-detection/"), spec
+        assert spec.get("mode") in ("FastFile", "File"), spec
 
 
 # ------------------------------------------------------------------
-# IAM grants cover what the jobs touch
+# IAM grants cover what the jobs and the workflows touch
 # ------------------------------------------------------------------
 
-def _s3_resources(policy: dict, action: str) -> list[str]:
+@pytest.mark.parametrize("path", sorted(INFRA.glob("**/*.json")), ids=lambda p: p.name)
+def test_templates_render_to_valid_json(path):
+    text = render(path)
+    assert "${" not in text, f"undefined placeholder in {path.name}"
+    json.loads(text)
+
+
+def _resources(policy: dict, action: str) -> list[str]:
     out = []
     for st in policy["Statement"]:
         actions = st["Action"] if isinstance(st["Action"], list) else [st["Action"]]
         if action in actions:
             res = st["Resource"] if isinstance(st["Resource"], list) else [st["Resource"]]
-            out += [r.removeprefix("arn:aws:s3:::") for r in res]
+            out += res
     return out
 
 
 def _covered(uri: str, resources: list[str]) -> bool:
     key = uri.removeprefix("s3://")
-    return any(key.startswith(r.rstrip("*")) for r in resources)
+    return any(key.startswith(r.removeprefix("arn:aws:s3:::").rstrip("*")) for r in resources)
 
 
-@pytest.mark.parametrize("_, name, state, __", PIPELINES)
-def test_sagemaker_role_can_read_inputs_and_write_outputs(_, name, state, __):
+@pytest.mark.parametrize("cfg", all_configs())
+def test_sagemaker_role_can_read_inputs_and_write_outputs(cfg):
     policy = json.loads(render(INFRA / "iam" / "sagemaker-policy.json"))
-    p = task_params(name, state)
-    for c in p["InputDataConfig"]:
-        assert _covered(c["DataSource"]["S3DataSource"]["S3Uri"], _s3_resources(policy, "s3:GetObject"))
-    for fmt in (p["OutputDataConfig"]["S3OutputPath.$"], p["CheckpointConfig"]["S3Uri.$"]):
-        uri = re.search(r"'(s3://[^']*)'", fmt).group(1).replace("{}", "job")
-        assert _covered(uri, _s3_resources(policy, "s3:PutObject"))
+    sm = config(cfg)["sagemaker"]
+    for spec in sm["inputs"].values():
+        assert _covered(spec["uri"], _resources(policy, "s3:GetObject")), spec["uri"]
+    for key in ("checkpoint_prefix", "output_prefix"):
+        uri = f"s3://{sm['output_bucket']}/{sm[key]}/job/"
+        assert _covered(uri, _resources(policy, "s3:PutObject")), uri
 
 
-def test_names_agree_across_setup_workflows_and_policies():
+def test_github_role_can_launch_and_follow_jobs():
+    gh = json.loads(render(INFRA / "iam" / "github-policy.json"))
+    for action in ("sagemaker:CreateTrainingJob", "sagemaker:DescribeTrainingJob", "sagemaker:AddTags",
+                   "logs:GetLogEvents", "logs:FilterLogEvents", "ecr:DescribeImages", "ecr:PutImage"):
+        assert _resources(gh, action), action
+    assert _resources(gh, "iam:PassRole") == [f"arn:aws:iam::{ACCOUNT}:role/{SAGEMAKER_ROLE}"]
+    assert any(r.endswith(f"repository/{ECR_REPOSITORY}") for r in _resources(gh, "ecr:PutImage"))
+
+
+def test_names_agree_across_setup_and_workflows():
     setup = (INFRA / "setup-aws.sh").read_text(encoding="utf-8")
-    for role in ("forgery-github-actions-role", "forgery-stepfunctions-role", "forgery-sagemaker-role"):
+    for role in ("forgery-github-actions-role", SAGEMAKER_ROLE):
         assert f"make_role {role}" in setup
-
-    deployed = {e["name"] for e in workflow("deploy-pipeline.yml")["jobs"]["deploy"]["strategy"]["matrix"]["include"]}
-    assert deployed == {p[0] for p in PIPELINES}
-    for wf, machine in (("smoke-test.yml", "forgery-smoke"), ("run-training.yml", "forgery-training")):
-        assert workflow(wf)["env"]["STATE_MACHINE"] == machine
+    assert "stepfunctions" not in setup
+    assert f"--repository-name {ECR_REPOSITORY}" in setup
     for wf in ("build-image.yml", "smoke-test.yml", "run-training.yml"):
-        assert workflow(wf)["env"]["ECR_REPOSITORY"] == "forgery-train"
-
-    gh = render(INFRA / "iam" / "github-policy.json")
-    assert "stateMachine:forgery-*" in gh and "repository/forgery-train" in gh
-    assert "role/forgery-stepfunctions-role" in gh
-    assert "role/forgery-stepfunctions-role" in (ROOT / ".github/workflows/deploy-pipeline.yml").read_text()
+        assert workflow(wf)["env"]["ECR_REPOSITORY"] == ECR_REPOSITORY
 
 
 def test_workflows_use_one_region():
     regions = {workflow(f.name)["env"]["AWS_REGION"] for f in WORKFLOWS.glob("*.yml") if "AWS_REGION" in workflow(f.name).get("env", {})}
     assert regions == {REGION}
     assert f"AWS_REGION:-{REGION}" in (INFRA / "setup-aws.sh").read_text(encoding="utf-8")
-    for _, _, _, cfg in PIPELINES:
-        assert config(cfg)["sagemaker"]["region"] == REGION
 
 
 # ------------------------------------------------------------------
@@ -218,7 +254,7 @@ def test_metric_regexes_match_the_trainer_format():
     log = "\n".join(f"2026-10-01 12:00:00 | INFO | forge | {line}" for line in stub.lines)
 
     expected = {"loss": 0.25, "iou": 0.5, "f1": 0.625, "precision": 0.75, "recall": 0.5, "accuracy": 0.875}
-    for m in task_params("train-pipeline.asl.json", "Train")["AlgorithmSpecification"]["MetricDefinitions"]:
+    for m in metric_definitions():
         found = re.findall(m["Regex"], log)
         assert len(found) == 1, m
         assert float(found[0]) == expected[m["Name"].split(":")[1]], m
