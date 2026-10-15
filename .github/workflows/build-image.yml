@@ -2,10 +2,18 @@
 #
 # Tags pushed: the 12-char commit SHA always, plus `latest` on the default
 # branch and whatever you type into the image_tag input. Pin real runs to the SHA.
+#
+# Runs by itself when training code changes on the default branch, so Smoke
+# test / Run training with a blank image tag pick up the new code. Also
+# runnable by hand from the Actions tab (any branch).
 name: Build training image
 
-# Manual only — nothing that touches AWS runs on push.
 on:
+  push:
+    branches: [general-image-forgery-datasets]
+    paths:
+      - "authgenforge/**"
+      - "aws-sagemaker/**"
   workflow_dispatch:
     inputs:
       image_tag:
@@ -82,7 +90,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: sagemaker/Dockerfile
+          file: aws-sagemaker/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           build-args: GIT_SHA=${{ github.sha }}
@@ -97,5 +105,6 @@ jobs:
             echo '```'
             echo "${{ steps.meta.outputs.image_uri }}"
             echo '```'
-            echo "Use image tag \`${{ steps.meta.outputs.sha_tag }}\` in **Smoke test** and **Run training**."
+            echo "Use image tag \`${{ steps.meta.outputs.sha_tag }}\` in **Smoke test** and **Run training**,"
+            echo "or leave the tag blank there to use the most recently pushed image."
           } >> "$GITHUB_STEP_SUMMARY"

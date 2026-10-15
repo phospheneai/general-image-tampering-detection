@@ -1,7 +1,9 @@
 # Start a training run: one click.
-# Picks an image already in ECR and starts the state machine, which creates the
-# GPU training job that pulls that image and runs sagemaker/train.py.
-# Returns as soon as the job is started; follow it in the SageMaker console.
+# Picks an image already in ECR and calls aws-sagemaker/launch.py directly.
+# launch.py is config-driven (region, bucket, input channels and checkpoint
+# path all come from the chosen config's `sagemaker:` block); the image only
+# decides which code runs, so one image build serves any config in the list.
+# Returns as soon as the job is submitted; follow it in the SageMaker console.
 name: Run training
 
 on:
@@ -11,11 +13,11 @@ on:
         description: "Run name — becomes the SageMaker job name and the S3 sub-prefix"
         required: true
       image_tag:
-        description: "ECR tag to run (commit SHA from Build training image, or latest — prefer the SHA for real runs)"
+        description: "ECR tag to run. Blank = whichever image was pushed most recently (not necessarily :latest — that tag only moves on a default-branch build)."
         required: false
-        default: "latest"
+        default: ""
       config:
-        description: "Training config inside the image (smoke has its own workflow)"
+        description: "Training config inside the image (relative to aws-sagemaker/)"
         required: false
         type: choice
         default: "config/train_forensics.yml"
@@ -26,13 +28,17 @@ on:
         required: false
         default: "1"
       max_runtime_hours:
-        description: "Hard time limit for the job, in hours (SageMaker max is 672)"
+        description: "Hard time limit for the training itself, in hours (spot: at most 648)"
         required: false
         default: "72"
+      no_spot:
+        description: "On-demand instead of spot (spot is cheaper but can be interrupted; training resumes by itself)"
+        required: false
+        type: boolean
+        default: false
 
 env:
   AWS_REGION: us-east-1
-  STATE_MACHINE: forgery-training
   ECR_REPOSITORY: forgery-train
   DATA: s3://authenta-data-rnd/image-tampering-detection
 
@@ -44,48 +50,83 @@ jobs:
   start:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Start the pipeline
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install --quiet "sagemaker>=2.240,<3" boto3 pyyaml
+
+      - name: Launch
         env:
           RUN_NAME: ${{ inputs.run_name }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           CONFIG: ${{ inputs.config }}
           END_EPOCH: ${{ inputs.end_epoch }}
           MAX_HOURS: ${{ inputs.max_runtime_hours }}
+          NO_SPOT: ${{ inputs.no_spot }}
+          SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
         run: |
           set -euo pipefail
           [[ "$END_EPOCH" =~ ^[1-9][0-9]*$ ]] || { echo "::error::end_epoch must be a positive integer"; exit 1; }
-          if ! [[ "$MAX_HOURS" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_HOURS" -gt 672 ]; then
-            echo "::error::max_runtime_hours must be an integer 1-672"; exit 1
+          LIMIT=672; [ "$NO_SPOT" = "true" ] || LIMIT=648   # spot: max wait (runtime + 24 h) caps at 672
+          if ! [[ "$MAX_HOURS" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_HOURS" -gt "$LIMIT" ]; then
+            echo "::error::max_runtime_hours must be an integer 1-${LIMIT}"; exit 1
           fi
 
+          aws s3 ls "$DATA/artifacts/dinov3-vitl16/model.safetensors" >/dev/null \
+            || { echo "::error::DINOv3 backbone missing at $DATA/artifacts/dinov3-vitl16/ (aws-sagemaker/README.md)"; exit 1; }
+
           ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+
+          if [ -z "$IMAGE_TAG" ]; then
+            # blank -> whatever was pushed most recently, by push time, not
+            # the :latest tag (that only moves on a default-branch build)
+            IMAGE_TAG=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --region "$AWS_REGION" \
+              --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' --output text)
+            if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "None" ]; then
+              echo "::error::no images in $ECR_REPOSITORY — run 'Build training image' first"
+              exit 1
+            fi
+            echo "no image tag given — using the most recently pushed: $IMAGE_TAG"
+          fi
           IMAGE="${ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-          # fail now, not 10 minutes into provisioning
+          # fail now, not 10 minutes into provisioning, if the tag isn't there
           aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
             --image-ids imageTag="$IMAGE_TAG" --region "$AWS_REGION" >/dev/null
-          aws s3 ls "$DATA/artifacts/dinov3-vitl16/model.safetensors" >/dev/null \
-            || { echo "::error::DINOv3 backbone missing at $DATA/artifacts/dinov3-vitl16/ (sagemaker/README.md)"; exit 1; }
 
-          # SageMaker job names must be unique forever and match [a-zA-Z0-9-]{1,63};
-          # the execution name becomes the job name, so it is sanitised and stamped.
+          # the job runs as our own SageMaker role (aws-infra/setup-aws.sh);
+          # a SAGEMAKER_ROLE_ARN repository secret overrides it
+          SAGEMAKER_ROLE="${SAGEMAKER_ROLE_ARN:-arn:aws:iam::${ACCOUNT}:role/forgery-sagemaker-role}"
+          export SAGEMAKER_ROLE
+
+          # SageMaker job names must be unique forever and match
+          # [a-zA-Z0-9-]{1,63}, so the run name is sanitised and stamped.
           SLUG=$(printf '%s' "$RUN_NAME" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')
           STAMP=$(date -u +%Y%m%d-%H%M%S)
           JOB="$(printf '%.*s' $((63 - ${#STAMP} - 1)) "$SLUG")-${STAMP}"
           JOB="${JOB#-}"
 
-          INPUT=$(jq -nc --arg i "$IMAGE" --arg c "$CONFIG" --arg e "$END_EPOCH" \
-                   --argjson s "$((MAX_HOURS * 3600))" \
-                   '{image_uri:$i, config:$c, end_epoch:$e, max_runtime_seconds:$s}')
+          SPOT_ARGS=(--max-wait-hours "$((MAX_HOURS + 24))")
+          SPOT="spot"
+          if [ "$NO_SPOT" = "true" ]; then SPOT_ARGS=(--no-spot); SPOT="on-demand"; fi
 
-          EXEC=$(aws stepfunctions start-execution \
-            --state-machine-arn "arn:aws:states:${AWS_REGION}:${ACCOUNT}:stateMachine:${STATE_MACHINE}" \
-            --name "$JOB" --input "$INPUT" --query executionArn --output text)
+          python aws-sagemaker/launch.py \
+            --config "$CONFIG" \
+            --image-uri "$IMAGE" \
+            --run-name "$JOB" \
+            --end-epoch "$END_EPOCH" \
+            --max-run-hours "$MAX_HOURS" \
+            --volume-size 200 \
+            "${SPOT_ARGS[@]}" \
+            --no-wait
 
           {
             echo "### Training started"
@@ -95,9 +136,7 @@ jobs:
             echo "| job | \`${JOB}\` |"
             echo "| image | \`${IMAGE}\` |"
             echo "| config | \`${CONFIG}\` |"
-            echo "| epochs / limit | ${END_EPOCH} / ${MAX_HOURS} h |"
+            echo "| epochs / limit | ${END_EPOCH} / ${MAX_HOURS} h, ${SPOT} |"
             echo "| checkpoints | \`${DATA}/sagemaker/checkpoints/${JOB}/\` |"
             echo "| logs | \`/aws/sagemaker/TrainingJobs/${JOB}\` |"
-            echo "| execution | \`${EXEC}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "started $EXEC"
