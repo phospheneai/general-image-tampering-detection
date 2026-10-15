@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # One-time AWS setup for the training pipeline. Idempotent — safe to re-run.
 # Run it once with admin credentials for the target account:
-#   bash infra/setup-aws.sh
+#   bash aws-infra/setup-aws.sh
 #
 # Creates (in AWS_REGION, default us-east-1 — where the data bucket lives):
 #   1. the GitHub OIDC provider        (so Actions needs no access keys)
-#   2. role forgery-github-actions-role (Actions: push to ECR, deploy + start the pipeline)
-#   3. role forgery-stepfunctions-role  (Step Functions: create training jobs)
-#   4. role forgery-sagemaker-role      (the training job: pull the image, read data, write checkpoints)
-#   5. the ECR repository forgery-train
+#   2. role forgery-github-actions-role (Actions: push to ECR, create training jobs)
+#   3. role forgery-sagemaker-role      (the training job: pull the image, read data, write checkpoints)
+#   4. the ECR repository forgery-train
 # Prints the one value to paste into GitHub at the end.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -33,7 +32,7 @@ else
   echo "[setup] OIDC provider created"
 fi
 
-# ── 2-4. roles ────────────────────────────────────────────────────────────────
+# ── 2-3. roles ────────────────────────────────────────────────────────────────
 make_role () {                       # name  trust-file  policy-file
   local trust policy
   trust=$(render "$2"); policy=$(render "$3")
@@ -47,10 +46,9 @@ make_role () {                       # name  trust-file  policy-file
   aws iam put-role-policy --role-name "$1" --policy-name "$1-policy" --policy-document "$policy"
 }
 make_role forgery-github-actions-role iam/github-trust.json        iam/github-policy.json
-make_role forgery-stepfunctions-role  iam/stepfunctions-trust.json iam/stepfunctions-policy.json
 make_role forgery-sagemaker-role      iam/sagemaker-trust.json     iam/sagemaker-policy.json
 
-# ── 5. ECR repository ─────────────────────────────────────────────────────────
+# ── 4. ECR repository ─────────────────────────────────────────────────────────
 aws ecr describe-repositories --repository-names forgery-train --region "$AWS_REGION" >/dev/null 2>&1 \
   || aws ecr create-repository --repository-name forgery-train --region "$AWS_REGION" \
        --image-scanning-configuration scanOnPush=true >/dev/null
@@ -76,8 +74,7 @@ Before the first smoke test, upload (once):
 
 Then run the workflows, in order:
   1. "Build training image"  -> builds and pushes to ECR
-  2. "Deploy pipelines"      -> creates forgery-training AND forgery-smoke
-  3. "Smoke test"            -> 1 epoch on the smoke slice, waits, red/green
-  4. "Run training"          -> the real run
+  2. "Smoke test"            -> 1 epoch on the smoke slice, waits, red/green
+  3. "Run training"          -> the real run
 ──────────────────────────────────────────────────────────────────────────────
 MSG

@@ -35,41 +35,35 @@
       "Resource": "arn:aws:ecr:*:763104351884:repository/*"
     },
     {
-      "Sid": "ValidateDefinitions",
-      "Effect": "Allow",
-      "Action": "states:ValidateStateMachineDefinition",
-      "Resource": "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:stateMachine:*"
-    },
-    {
-      "Sid": "DeployAndStartThePipeline",
+      "Sid": "RunTrainingJobsDirectly",
       "Effect": "Allow",
       "Action": [
-        "states:CreateStateMachine",
-        "states:UpdateStateMachine",
-        "states:DescribeStateMachine",
-        "states:StartExecution",
-        "states:DescribeExecution"
+        "sagemaker:CreateTrainingJob",
+        "sagemaker:DescribeTrainingJob",
+        "sagemaker:AddTags"
       ],
-      "Resource": [
-        "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:stateMachine:forgery-*",
-        "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:execution:forgery-*:*"
-      ]
+      "Resource": "arn:aws:sagemaker:${AWS_REGION}:${AWS_ACCOUNT_ID}:training-job/*"
     },
     {
-      "Sid": "PassTheStateMachineRoleWhenDeploying",
+      "Sid": "PassTheSageMakerRoleWhenLaunching",
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/forgery-stepfunctions-role",
-      "Condition": { "StringEquals": { "iam:PassedToService": "states.amazonaws.com" } }
+      "Resource": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/forgery-sagemaker-role",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "sagemaker.amazonaws.com"
+        }
+      }
     },
     {
-      "Sid": "ReportJobResultsInTheWorkflowSummary",
+      "Sid": "FollowTheJobLogs",
       "Effect": "Allow",
-      "Action": ["sagemaker:DescribeTrainingJob", "logs:FilterLogEvents"],
-      "Resource": [
-        "arn:aws:sagemaker:${AWS_REGION}:${AWS_ACCOUNT_ID}:training-job/*",
-        "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/sagemaker/TrainingJobs:*"
-      ]
+      "Action": [
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents"
+      ],
+      "Resource": "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/sagemaker/TrainingJobs:*"
     },
     {
       "Sid": "PreflightCheckThatDataAndBackboneExist",

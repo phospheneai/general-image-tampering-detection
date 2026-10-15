@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Print an infra template (IAM policy or ASL) with the account and region filled
-# in. The templates stay account-free in git; everything that sends them to AWS
-# (setup-aws.sh, the Deploy pipelines workflow) goes through this.
+# Print an IAM policy template with the account and region filled in. The
+# templates stay account-free in git; setup-aws.sh sends them to AWS through
+# this.
 #
-#   AWS_ACCOUNT_ID=123456789012 AWS_REGION=us-east-1 bash infra/render.sh infra/train-pipeline.asl.json
+#   AWS_ACCOUNT_ID=123456789012 AWS_REGION=us-east-1 bash aws-infra/render.sh aws-infra/iam/github-policy.json
 set -euo pipefail
 : "${AWS_ACCOUNT_ID:?set AWS_ACCOUNT_ID}"
 : "${AWS_REGION:?set AWS_REGION}"
