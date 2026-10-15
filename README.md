@@ -1,4 +1,4 @@
-# general-image-tampering-detecction
+# general-image-tampering-detection
 
 Trains the Authenta image-tampering model: given an image, it marks which
 pixels were edited. The model is DINOv3 ViT-L/16 with LoRA and a small
@@ -9,7 +9,7 @@ There are two ways to train it, each with its own guide:
 | Where it trains | Guide |
 |---|---|
 | **This machine's GPU** | this file — follow the steps below from top to bottom |
-| **AWS SageMaker** (a rented cloud GPU) | [sagemaker/README.md](sagemaker/README.md) |
+| **AWS SageMaker** (a rented cloud GPU) | [aws-sagemaker/README.md](aws-sagemaker/README.md) |
 
 ---
 
@@ -68,8 +68,8 @@ version number.
 
 ```bash
 cd ~
-git clone https://github.com/phospheneai/general-image-tampering-detecction.git
-cd general-image-tampering-detecction
+git clone https://github.com/phospheneai/general-image-tampering-detection.git
+cd general-image-tampering-detection
 git checkout sagemaker-pipeline
 ```
 
@@ -95,7 +95,7 @@ Your terminal prompt now starts with `(forgery)`. **Every time you open a new
 terminal, run these two lines first:**
 
 ```bash
-cd ~/general-image-tampering-detecction
+cd ~/general-image-tampering-detection
 conda activate forgery
 ```
 
@@ -197,7 +197,7 @@ tmux new -s train
 Inside the tmux window:
 
 ```bash
-cd ~/general-image-tampering-detecction
+cd ~/general-image-tampering-detection
 conda activate forgery
 python train.py
 ```
@@ -270,7 +270,7 @@ The per-image file has these columns:
 | `CUDA out of memory` | The graphics card does not have enough memory. Open `configs/local/train_forensics.yml`, change `batch_size: 4` to `batch_size: 2` and `grad_accum_steps: 8` to `grad_accum_steps: 16`, then run again. |
 | `conda: command not found` | Close the terminal, open a new one, and try again. If it still fails, redo Step 2. |
 | `ModuleNotFoundError` | You are not in the project environment. Run `conda activate forgery`. |
-| Training is very slow | Images are read from AWS in the `us-east-1` region. On a slow or distant connection this is the limit, not the graphics card. Training on AWS itself avoids it: see [sagemaker/README.md](sagemaker/README.md). |
+| Training is very slow | Images are read from AWS in the `us-east-1` region. On a slow or distant connection this is the limit, not the graphics card. Training on AWS itself avoids it: see [aws-sagemaker/README.md](aws-sagemaker/README.md). |
 
 ### The graphics driver is not working
 
@@ -334,8 +334,8 @@ authgenforge/
 packages/
   mdsconverter/  raw forgery datasets -> MDS shards (see DATASET_PIPELINE.md)
 configs/         one yml per experiment + dataset conversion (mds/)
-sagemaker/       SageMaker training image: entry point, configs, Dockerfile
-infra/           Step Functions pipelines + IAM for SageMaker training (see sagemaker/README.md)
+aws-sagemaker/   SageMaker training: launcher, entry point, configs, Dockerfile (see aws-sagemaker/README.md)
+aws-infra/       one-time AWS setup + IAM for the three GitHub workflows
 notebooks/       thin launcher scripts (config path in, pipeline out)
 scripts/         install / artifact-download / setup
 tests/           smoke tests + single-batch overfit sanity check
@@ -655,7 +655,7 @@ Record the new counts in [DATASETS.md](DATASETS.md).
   metric.
 - If you touched `authgenforge/data/` or `packages/mdsconverter/`, run
   `tests/smoke_test_mds.py` and `tests/smoke_test_all_paths.py`.
-- If you touched `sagemaker/`, `infra/`, or the trainer's log format, run
+- If you touched `aws-sagemaker/`, `aws-infra/`, the workflows, or the trainer's log format, run
   `pytest tests/sagemaker` (CI also runs it, plus the container test).
 - If you add a new config key that holds a file path, resolve it in
   `option_utils.py`'s `parse_yml` (add it to the relevant path-resolution

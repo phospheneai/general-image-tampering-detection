@@ -7,9 +7,9 @@ model: dinov3_forensics_lora
 type: binary_segmentation
 
 # MDS shards (processed-v1), read in place from the SageMaker input channels.
-# Channel name <-> dataroot: the state machine (infra/train-pipeline.asl.json)
-# mounts channel `train` at /opt/ml/input/data/train, etc. Rename one, rename
-# the other — tests/sagemaker/test_infra.py fails if they drift.
+# Channel name <-> dataroot: launch.py mounts each entry of sagemaker.inputs
+# (below) as a channel, e.g. `train` at /opt/ml/input/data/train. Rename one,
+# rename the other — tests/sagemaker/test_infra.py fails if they drift.
 data_format: mds
 
 
@@ -137,12 +137,12 @@ train_settings:
   resume_dataloader: true
 
 # ============================================================
-# SageMaker (sagemaker/launch.py only)
+# SageMaker (read by aws-sagemaker/launch.py; inert during training)
 # ============================================================
 #
-# Read by the laptop launcher, NOT by the automated pipeline: the state
-# machine (infra/train-pipeline.asl.json) carries its own copy of these S3
-# locations in InputDataConfig. Change one, change both.
+# The one place the S3 locations live: the Smoke test and Run training
+# workflows and a laptop launch all go through launch.py, which reads them
+# from here.
 
 sagemaker:
   region: us-east-1

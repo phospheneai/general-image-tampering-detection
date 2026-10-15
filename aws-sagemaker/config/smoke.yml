@@ -70,9 +70,8 @@ train_settings:
   load_checkpoint_file_path:
   resume_dataloader: true
 
-# Read by sagemaker/launch.py only — the forgery-smoke state machine
-# (infra/smoke-pipeline.asl.json) carries its own copy. Change one, change both.
-#   python sagemaker/launch.py --config config/smoke.yml --run-name smoke-1 --max-run-hours 1
+# Read by aws-sagemaker/launch.py (the Smoke test workflow runs this config):
+#   python aws-sagemaker/launch.py --config config/smoke.yml --run-name smoke-1 --max-run-hours 1
 sagemaker:
   region: us-east-1
   output_bucket: authenta-data-rnd
