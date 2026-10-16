@@ -7,7 +7,7 @@
 # this workflow if the job fails — a real red/green check before you commit
 # to a multi-day run.
 #
-# Needs (see aws-sagemaker/README.md, Step 6):
+# Needs (see aws-sagemaker/README.md, One-time setup):
 #   s3://authenta-data-rnd/image-tampering-detection/smoke/{train,test}/index.json
 #   s3://authenta-data-rnd/image-tampering-detection/artifacts/dinov3-vitl16/model.safetensors
 name: Smoke test
