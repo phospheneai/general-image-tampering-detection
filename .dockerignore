@@ -5,12 +5,14 @@
 # not needed to train
 playground/
 notebooks/
-configs/          # the image uses aws-sagemaker/config/, not this copy
+# the image uses aws-sagemaker/config/, not configs/
+configs/
 packages/
 tests/
 scripts/
 aws-infra/
-artifacts/        # the backbone arrives on the `artifacts` S3 channel
+# the backbone arrives on the `artifacts` S3 channel
+artifacts/
 
 # repo/tooling noise
 .git
