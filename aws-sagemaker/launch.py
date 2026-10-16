@@ -4,25 +4,28 @@ Launch the Authenta General Image Forgery training job on SageMaker.
 
 Example:
 
-    python sagemaker/launch.py \
-        --role arn:aws:iam::<ACCT>:role/<ExecutionRole> \
+    python aws-sagemaker/launch.py \
+        --role arn:aws:iam::<ACCT>:role/forgery-sagemaker-role \
         --run-name <name>
 
 Region, bucket, and input channels come from the `sagemaker:` block of
 
-    sagemaker/config/normal/train_forensics.yml
+    aws-sagemaker/config/train_forensics.yml
 
-The configuration path is relative to `sagemaker/`, which is also the
-estimator's source_dir.
+The configuration path is relative to `aws-sagemaker/`. Nothing about the
+S3 locations is hardcoded here.
 
-The training code uses:
+Two ways to run the code:
 
-    source_dir = sagemaker/
+1. --image-uri <ECR image> (what the GitHub workflows do): the image built
+   by build-image.yml already holds authgenforge/ and aws-sagemaker/ under
+   /opt/ml/code/. --config and --end-epoch are passed as container
+   arguments, so one image serves any config.
 
-while the `authgenforge/` package is supplied through the estimator's
-dependencies and becomes available inside the SageMaker container under:
-
-    /opt/ml/code/authgenforge/
+2. No --image-uri (one-off runs from a laptop): source_dir = aws-sagemaker/
+   is shipped on the managed PyTorch container, and the `authgenforge/`
+   package goes along as an estimator dependency, landing at
+   /opt/ml/code/authgenforge/.
 
 The run name is used as:
 
@@ -78,10 +81,10 @@ REPO_ROOT = Path(
     __file__
 ).resolve().parent.parent
 
-SM_SRC = REPO_ROOT / "sagemaker"
+SM_SRC = REPO_ROOT / "aws-sagemaker"
 
 DEFAULT_CONFIG = (
-    "config/normal/train_forensics.yml"
+    "config/train_forensics.yml"
 )
 
 
@@ -97,67 +100,25 @@ PY_VERSION = "py311"
 # Metrics
 # ============================================================
 
-# These regexes correspond to the segmentation trainer's
-# per-epoch logging output.
-#
-# The exact trainer log format should be kept aligned with
-# these definitions when logging is finalized.
+# Scraped from SegmentationTrainer._print_metrics, e.g.
+#   [Train] Epoch 3 | loss 0.1234 | IoU 0.5000 | F1 0.6000 | precision ...
+# Kept as a plain literal: tests/sagemaker/emulate_training_job.py reads it
+# with ast (stdlib only) and checks every one against real trainer output.
 
 METRIC_DEFS = [
-    {
-        "Name": "train:loss",
-        "Regex": (
-            r"train.*loss[:=]\s*([0-9eE+.\-]+)"
-        ),
-    },
-    {
-        "Name": "train:iou",
-        "Regex": (
-            r"train.*iou[:=]\s*([0-9eE+.\-]+)"
-        ),
-    },
-    {
-        "Name": "train:f1",
-        "Regex": (
-            r"train.*f1[:=]\s*([0-9eE+.\-]+)"
-        ),
-    },
-    {
-        "Name": "val:loss",
-        "Regex": (
-            r"val.*loss[:=]\s*([0-9eE+.\-]+)"
-        ),
-    },
-    {
-        "Name": "val:iou",
-        "Regex": (
-            r"val.*iou[:=]\s*([0-9eE+.\-]+)"
-        ),
-    },
-    {
-        "Name": "val:f1",
-        "Regex": (
-            r"val.*f1[:=]\s*([0-9eE+.\-]+)"
-        ),
-    },
-    {
-        "Name": "val:precision",
-        "Regex": (
-            r"val.*precision[:=]\s*([0-9eE+.\-]+)"
-        ),
-    },
-    {
-        "Name": "val:recall",
-        "Regex": (
-            r"val.*recall[:=]\s*([0-9eE+.\-]+)"
-        ),
-    },
-    {
-        "Name": "val:accuracy",
-        "Regex": (
-            r"val.*accuracy[:=]\s*([0-9eE+.\-]+)"
-        ),
-    },
+    {"Name": "train:loss", "Regex": r"\[Train\] Epoch \d+ \| loss ([0-9.]+)"},
+    {"Name": "train:iou", "Regex": r"\[Train\] Epoch \d+ \|.*\| IoU ([0-9.]+)"},
+    {"Name": "train:f1", "Regex": r"\[Train\] Epoch \d+ \|.*\| F1 ([0-9.]+)"},
+    {"Name": "val:loss", "Regex": r"\[Val\] Epoch \d+ \| loss ([0-9.]+)"},
+    {"Name": "val:iou", "Regex": r"\[Val\] Epoch \d+ \|.*\| IoU ([0-9.]+)"},
+    {"Name": "val:f1", "Regex": r"\[Val\] Epoch \d+ \|.*\| F1 ([0-9.]+)"},
+    {"Name": "val:precision", "Regex": r"\[Val\] Epoch \d+ \|.*\| precision ([0-9.]+)"},
+    {"Name": "val:recall", "Regex": r"\[Val\] Epoch \d+ \|.*\| recall ([0-9.]+)"},
+    {"Name": "val:accuracy", "Regex": r"\[Val\] Epoch \d+ \|.*\| accuracy ([0-9.]+)"},
+]
+
+TAGS = [
+    {"Key": "Project", "Value": "image-tampering-detection"},
 ]
 
 
@@ -176,7 +137,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_CONFIG,
         help=(
             "SageMaker training YAML, relative to "
-            "sagemaker/."
+            "aws-sagemaker/."
         ),
     )
 
@@ -197,6 +158,17 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Job name and S3 sub-prefix for this run. "
             "Prompted if omitted or already taken."
+        ),
+    )
+
+    parser.add_argument(
+        "--image-uri",
+        default=None,
+        help=(
+            "ECR image built by the Build training image "
+            "workflow (code baked in). One image runs any "
+            "--config. Omit to ship aws-sagemaker/ on the "
+            "managed PyTorch container instead."
         ),
     )
 
@@ -607,7 +579,7 @@ def main() -> None:
 
         mode = spec.get(
             "mode",
-            "File",
+            "FastFile",
         )
 
         channels[name] = (
@@ -664,21 +636,7 @@ def main() -> None:
     # --------------------------------------------------------
 
     estimator_kwargs = {
-        "entry_point": "train.py",
-
-        # The contents of sagemaker/ become /opt/ml/code/.
-        "source_dir": str(SM_SRC),
-
-        # authgenforge/ is outside source_dir, so ship it as
-        # an estimator dependency.
-        "dependencies": [
-            str(authgenforge_dir),
-        ],
-
         "role": args.role,
-
-        "framework_version": FRAMEWORK_VERSION,
-        "py_version": PY_VERSION,
 
         "instance_type": args.instance_type,
         "instance_count": 1,
@@ -696,22 +654,13 @@ def main() -> None:
 
         "output_path": output_s3_uri,
 
-        # Keep generated training code in the output bucket.
-        "code_location": (
-            f"{s3}/"
-            f"{output_prefix.split('/')[0]}/"
-            "code"
-        ),
-
         "disable_profiler": True,
         "debugger_hook_config": False,
 
         "metric_definitions": METRIC_DEFS,
+        "enable_sagemaker_metrics": True,
 
-        "hyperparameters": {
-            "config": args.config,
-            "end-epoch": end_epoch,
-        },
+        "tags": TAGS,
 
         "environment": {
             "HF_HOME": "/tmp/hf",
@@ -719,6 +668,63 @@ def main() -> None:
             "TQDM_MININTERVAL": "60",
         },
     }
+
+    # --------------------------------------------------------
+    # Code: a prebuilt image, or aws-sagemaker/ shipped fresh
+    # --------------------------------------------------------
+
+    if args.image_uri:
+        # The image already holds authgenforge/ and aws-sagemaker/
+        # (as /opt/ml/code/sagemaker/, see the Dockerfile). The config
+        # is chosen here, at launch time, not baked into the build.
+        estimator_kwargs.update(
+            image_uri=args.image_uri,
+            container_entry_point=[
+                "python",
+                "/opt/ml/code/sagemaker/train.py",
+            ],
+            container_arguments=[
+                "--config",
+                args.config,
+                "--end-epoch",
+                str(end_epoch),
+            ],
+        )
+
+        # train.py logs it, so a checkpoint can be traced back
+        # to the image that produced it.
+        estimator_kwargs["environment"][
+            "TRAINING_IMAGE"
+        ] = args.image_uri
+
+    else:
+        estimator_kwargs.update(
+            entry_point="train.py",
+
+            # The contents of aws-sagemaker/ become /opt/ml/code/.
+            source_dir=str(SM_SRC),
+
+            # authgenforge/ is outside source_dir, so ship it as
+            # an estimator dependency.
+            dependencies=[
+                str(authgenforge_dir),
+            ],
+
+            framework_version=FRAMEWORK_VERSION,
+            py_version=PY_VERSION,
+
+            # Keep generated training code in the output bucket.
+            code_location=(
+                f"{s3}/"
+                f"{output_prefix.split('/')[0]}/"
+                "code"
+            ),
+
+            hyperparameters={
+                "config": args.config,
+                "end-epoch": end_epoch,
+            },
+        )
 
     # --------------------------------------------------------
     # Spot configuration
@@ -770,21 +776,26 @@ def main() -> None:
         "[launch] instance count:  1"
     )
 
-    print(
-        f"[launch] framework:       PyTorch {FRAMEWORK_VERSION}"
-    )
+    if args.image_uri:
+        print(
+            f"[launch] image:           {args.image_uri}"
+        )
+    else:
+        print(
+            f"[launch] framework:       PyTorch {FRAMEWORK_VERSION}"
+        )
 
-    print(
-        f"[launch] Python:          {PY_VERSION}"
-    )
+        print(
+            f"[launch] Python:          {PY_VERSION}"
+        )
 
-    print(
-        f"[launch] source dir:      {SM_SRC}"
-    )
+        print(
+            f"[launch] source dir:      {SM_SRC}"
+        )
 
-    print(
-        f"[launch] dependency:      {authgenforge_dir}"
-    )
+        print(
+            f"[launch] dependency:      {authgenforge_dir}"
+        )
 
     print(
         "[launch] backbone:        "
@@ -846,7 +857,6 @@ def main() -> None:
     import sagemaker
 
     from sagemaker.inputs import TrainingInput
-    from sagemaker.pytorch import PyTorch
 
     # --------------------------------------------------------
     # SageMaker session
@@ -868,9 +878,18 @@ def main() -> None:
     # Create estimator
     # --------------------------------------------------------
 
-    estimator = PyTorch(
-        **estimator_kwargs,
-    )
+    if args.image_uri:
+        from sagemaker.estimator import Estimator
+
+        estimator = Estimator(
+            **estimator_kwargs,
+        )
+    else:
+        from sagemaker.pytorch import PyTorch
+
+        estimator = PyTorch(
+            **estimator_kwargs,
+        )
 
     # --------------------------------------------------------
     # Convert configured channels to TrainingInput objects

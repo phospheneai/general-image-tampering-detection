@@ -7,7 +7,7 @@
 #
 # Thin wrapper around:
 #
-#   sagemaker/launch.py
+#   aws-sagemaker/launch.py
 #
 # It provides the larger-run defaults while allowing any
 # additional launch.py arguments to be passed through.
@@ -43,7 +43,7 @@
 #
 # Region, output bucket, and input channels are defined in:
 #
-#   sagemaker/config/normal/train_forensics.yml
+#   aws-sagemaker/config/train_forensics.yml
 #
 # ============================================================
 
@@ -92,7 +92,7 @@ esac
 
 LAUNCH_ARGS=(
     --config
-    "config/normal/train_forensics.yml"
+    "config/train_forensics.yml"
 
     --volume-size
     "200"
@@ -123,6 +123,6 @@ fi
 
 set -x
 
-exec python sagemaker/launch.py \
+exec python aws-sagemaker/launch.py \
     "${LAUNCH_ARGS[@]}" \
     "$@"

@@ -1,5 +1,4 @@
 # Auto-installed by the sagemaker-training toolkit in the container (script mode).
-
 # Not for local dev — scripts/install_deps.sh owns that.
 #
 # The DLC (framework 2.3 / py311, an immutable tag) provides torch/torchvision/
@@ -9,13 +8,14 @@
 # - torchdata: only for stateful_loader (mid-epoch spot resume)
 # - mosaicml-streaming: only for data_format: mds (reads MDS shards);
 #   needs numpy < 2.2, compatible with the 1.26 pin above
+# - no `datasets`: nothing in the image imports it, and datasets>=4.1 pulls
+#   pyarrow>=21, which refuses to import against numpy < 2
 
 transformers==4.57.1
 tokenizers==0.22.2
 huggingface-hub==0.36.2
 peft==0.19.1
 accelerate==1.10.1
-datasets==5.0.0
 torchdata==0.11.0
 mosaicml-streaming==0.13.0
 numpy==1.26.4

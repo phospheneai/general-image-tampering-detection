@@ -1,11 +1,21 @@
+
 # ============================================================
 # General settings
 # ============================================================
 
-name: train_forensics_v1
+name: train_forensics_mds_v1
 model: dinov3_forensics_lora
 type: binary_segmentation
-data_context: normal
+
+# authgenforge/data/forensics_mds_dataset.py's ForensicsMDSDataset
+# (data_format: mds). dataroot is the MDS split output directory itself
+# (built by packages/mdsconverter/build_mds_dataset.py from configs/mds/
+# mds_dataset.yml's out: — one <out>/<split>/ dir per split, holding
+# index.json + shard.*.mds). A list of roots also works. For a split that
+# lives on S3, mount the bucket first and use the mounted folder:
+#   python -m authgenforge.utils.s3_mount \
+#       s3://authenta-data-rnd/image-tampering-detection/ ~/data/s3/image-tampering-detection
+data_format: mds
 
 
 # ============================================================
@@ -15,18 +25,24 @@ data_context: normal
 datasets:
 
   train:
-    dataroot: ""
-    n_workers: 8
+    dataroot:
+      - /home/ubuntu/data/processed/processed-v1/train
+      # - /home/ubuntu/data/s3/image-tampering-detection/processed-v1/train   (mounted S3)
+    n_workers: 4
     batch_size: 4
     crop_size: 512
     buffer_size: 1000
     total_samples: null
+    # StatefulDataLoader (requires torchdata) so a resumed run picks up at
+    # the exact shuffle position instead of restarting the epoch.
     stateful_loader: true
     pin_memory: true
 
   test:
-    dataroot: ""
-    n_workers: 4
+    dataroot:
+      - /home/ubuntu/data/processed/processed-v1/test
+      # - /home/ubuntu/data/s3/image-tampering-detection/processed-v1/test   (mounted S3)
+    n_workers: 2
     crop_size: 512
     pin_memory: true
 
@@ -38,7 +54,7 @@ datasets:
 structure:
 
   backbone:
-    model_path: ""
+    model_path: ../artifacts/mirror/dinov3-vitl16
     model_type: dinov3_vitl16
     lora_rank: 32
     lora_alpha: 64
@@ -118,8 +134,30 @@ train_settings:
   # Checkpointing
   # ----------------------------------------------------------
 
-  save_checkpoint_folder_path: ../../checkpoints
+  save_checkpoint_folder_path: ../checkpoints
 
   load_checkpoint_file_path:
 
   resume_dataloader: true
+
+
+# ============================================================
+# Evaluation settings
+# ============================================================
+#
+# Consumed by authgenforge/evals/evaluator.py's evaluate_from_yml().
+# Independent of train_settings.load_checkpoint_file_path (that one
+# resumes training; this is "which weights to evaluate" — typically
+# the <name>_best.pth written during training).
+
+eval_settings:
+
+  checkpoint_path: ../checkpoints/train_forensics_mds_v1/train_forensics_mds_v1_best.pth
+
+  image_size: 512
+  threshold: 0.5
+  batch_size: 4
+  num_workers: 4
+  half_precision: true
+
+  output_dir:
